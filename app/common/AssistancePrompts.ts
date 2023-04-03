@@ -8,4 +8,7 @@ export interface Prompt {
 
 export interface Suggestion {
   suggestedActions: DocAction[];
+  debug?: {
+    rawPrompt: string;
+  }
 }

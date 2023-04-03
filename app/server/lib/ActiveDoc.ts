@@ -1246,6 +1246,10 @@ export class ActiveDoc extends EventEmitter {
   }
 
   public async getAssistance(docSession: DocSession, userPrompt: Prompt): Promise<Suggestion> {
+    return this.getAssistanceWithOptions(docSession, userPrompt);
+  }
+
+  public async getAssistanceWithOptions(docSession: DocSession, userPrompt: Prompt, debug: boolean = false): Promise<Suggestion> {
     // Making a prompt can leak names of tables and columns.
     if (!await this._granularAccess.canScanData(docSession)) {
       throw new Error("Permission denied");
@@ -1254,12 +1258,17 @@ export class ActiveDoc extends EventEmitter {
     const { tableId, colId, description } = userPrompt;
     const prompt = await this._pyCall('get_formula_prompt', tableId, colId, description);
     this._log.debug(docSession, 'getAssistance prompt', {prompt});
-    const completion = await sendForCompletion(prompt);
+    const completion = /* {zing: 'bar'} || */ await sendForCompletion(prompt);
     this._log.debug(docSession, 'getAssistance completion', {completion});
     const formula = await this._pyCall('convert_formula_completion', completion);
     const action: DocAction = ["ModifyColumn", tableId, colId, {formula}];
     return {
       suggestedActions: [action],
+      ...(debug && {
+        debug: {
+          rawPrompt: prompt,
+        }
+      })
     };
   }
 

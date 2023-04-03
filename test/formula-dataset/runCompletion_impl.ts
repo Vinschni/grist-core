@@ -38,11 +38,14 @@ import * as os from 'os';
 import { pipeline } from 'stream';
 import { createDocTools } from "test/server/docTools";
 import { promisify } from 'util';
+import { Suggestion } from "app/common/AssistancePrompts";
+import { CellValue } from "app/plugin/GristData";
 
 const streamPipeline = promisify(pipeline);
 
 const DATA_PATH = process.env.DATA_PATH || path.join(__dirname, 'data');
 const PATH_TO_DOC = path.join(DATA_PATH, 'templates');
+const PATH_TO_RESULTS = path.join(DATA_PATH, 'results');
 const PATH_TO_CSV = path.join(DATA_PATH, 'formula-dataset-index.csv');
 const PATH_TO_CACHE = path.join(DATA_PATH, 'cache');
 const TEMPLATE_URL = "https://grist-static.com/datasets/grist_dataset_formulai_2023_02_20.zip";
@@ -112,6 +115,8 @@ export async function runCompletion() {
   const session = docTools.createFakeSession('owners');
   await docTools.before();
   let successCount = 0;
+  let caseCount = 0;
+  fs.mkdirSync(path.join(PATH_TO_RESULTS), {recursive: true});
 
   console.log('Testing AI assistance: ');
 
@@ -121,35 +126,57 @@ export async function runCompletion() {
 
     for (const rec of records) {
 
-      // load new document
-      if (!activeDoc || activeDoc.docName !== rec.doc_id) {
+      let success: boolean = false;
+      let debug: Suggestion['debug'];
+      let suggestedActions: Suggestion['suggestedActions'] | undefined;
+      let newValues: CellValue[] | undefined;
+      let expected: CellValue[] | undefined;
+      let formula: string | undefined;
+
+      try {
+        // load new document
+        //if (!process.env.wefwefwef || !activeDoc || activeDoc.docName !== rec.doc_id) {
         const docPath = path.join(PATH_TO_DOC, rec.doc_id + '.grist');
         activeDoc = await docTools.loadLocalDoc(docPath);
+        //}
         await activeDoc.waitForInitialization();
+
+        // get values
+        await activeDoc.docData!.fetchTable(rec.table_id);
+        expected = activeDoc.docData!.getTable(rec.table_id)!.getColValues(rec.col_id)!.slice();
+
+        // send prompt
+        const tableId = rec.table_id;
+        const colId = rec.col_id;
+        const description = rec.Description;
+        const result1 = await activeDoc.docStorage.get(`
+select * from _grist_Tables_column as c
+left join _grist_Tables as t on t.id = c.parentId
+where c.colId = ? and t.tableId = ?
+`, rec.col_id, rec.table_id);
+        formula = result1?.formula;
+        await activeDoc.waitForInitialization();
+
+        const result = await activeDoc.getAssistanceWithOptions(session, {tableId, colId, description}, true);
+        debug = result.debug;
+        suggestedActions = result.suggestedActions;
+        console.log("result of getAssistanceWithOptions", JSON.stringify({suggestedActions}, null, 2));
+        // apply modification
+        const {actionNum} = await activeDoc.applyUserActions(session, suggestedActions);
+        console.log({actionNum});
+
+        // get new values
+        newValues = activeDoc.docData!.getTable(rec.table_id)!.getColValues(rec.col_id)!.slice();
+
+        // revert modification
+        //const [bundle] = await activeDoc.getActions([actionNum]);
+        //await activeDoc.applyUserActionsById(session, [bundle!.actionNum], [bundle!.actionHash!], true);
+
+        // compare values
+        success = isEqual(expected, newValues);
+      } catch (e) {
+        console.error(e);
       }
-
-      // get values
-      await activeDoc.docData!.fetchTable(rec.table_id);
-      const expected = activeDoc.docData!.getTable(rec.table_id)!.getColValues(rec.col_id)!.slice();
-
-      // send prompt
-      const tableId = rec.table_id;
-      const colId = rec.col_id;
-      const description = rec.Description;
-      const {suggestedActions} = await activeDoc.getAssistance(session, {tableId, colId, description});
-
-      // apply modification
-      const {actionNum} = await activeDoc.applyUserActions(session, suggestedActions);
-
-      // get new values
-      const newValues = activeDoc.docData!.getTable(rec.table_id)!.getColValues(rec.col_id)!.slice();
-
-      // revert modification
-      const [bundle] = await activeDoc.getActions([actionNum]);
-      await activeDoc.applyUserActionsById(session, [bundle!.actionNum], [bundle!.actionHash!], true);
-
-      // compare values
-      const success = isEqual(expected, newValues);
 
       console.log(` ${success ? 'Successfully' : 'Failed to'} complete formula ` +
         `for column ${rec.table_id}.${rec.col_id} (doc=${rec.doc_id})`);
@@ -162,6 +189,22 @@ export async function runCompletion() {
         // console.log('expected=', expected);
         // console.log('actual=', newValues);
       }
+      const suggestedFormula = suggestedActions?.length === 1 &&
+        suggestedActions[0][0] === 'ModifyColumn' &&
+        suggestedActions[0][3].formula || suggestedActions;
+      fs.writeFileSync(
+        path.join(
+          PATH_TO_RESULTS,
+          `${rec.table_id}_${rec.col_id}_` + caseCount.toLocaleString('en', {minimumIntegerDigits: 8, useGrouping: false}) + '.json'),
+        JSON.stringify({
+          formula,
+          prompt: debug?.rawPrompt,
+          suggestedFormula, success,
+          expectedValues: expected,
+          suggestedValues: newValues,
+        }, null, 2));
+      caseCount++;
+      //process.exit(1);
     }
   } finally {
     await docTools.after();
@@ -171,6 +214,13 @@ export async function runCompletion() {
     console.log(
       `AI Assistance completed ${successCount} successful prompt on a total of ${records.length};`
     );
+    console.log(JSON.stringify(
+      {
+        hit: successCount,
+        total: records.length,
+        percentage: (100.0 * successCount) / Math.max(records.length, 1),
+      }
+    ));
   }
 }
 

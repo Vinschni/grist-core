@@ -37,7 +37,6 @@ def column_type(engine, table_id, col_id):
       Attachments="Any",
     )[parts[0]]
 
-
 def choices(col_rec):
   try:
     widget_options = json.loads(col_rec.widgetOptions)
@@ -142,7 +141,16 @@ def class_schema(engine, table_id, exclude_col_id=None, lookups=False):
 
   for col_id, col in visible_columns(engine, table_id):
     if col_id != exclude_col_id:
-      result += "    {}: {}\n".format(col_id, column_type(engine, table_id, col_id))
+      result += "    {}: {}".format(col_id, column_type(engine, table_id, col_id))
+      try:
+        value = getattr(engine.tables[table_id].user_table.all.get_one(), col_id)
+        txt = repr(value)
+        #if len(txt) < 50 and txt != "''" and txt != "None":
+        #  result += " # e.g. "
+        #  result += repr(value)
+      except Exception as e:
+        pass
+      result += "\n"
   result += "\n"
   return result
 
